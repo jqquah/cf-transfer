@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+ALLOW_DEV_AUTH=1
+DEV_SENDER_EMAIL=alice@example.com
+SIGNING_KEY=dev-only-not-secret-0123456789abcdef0123456789abcdef
+TTL_SECONDS=10
+NOTIFY_COOLDOWN_SECONDS=4
+PUBLIC_ORIGIN=http://localhost:8799

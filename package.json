@@ -1,0 +1,19 @@
+{
+  "name": "transfer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "test": "node --test tests/zip.test.mjs tests/auth.test.mjs",
+    "lint": "node tools/lint.mjs",
+    "tla": "sh spec/check.sh",
+    "test:e2e": "node --test tests/e2e.test.mjs",
+    "deploy": "node tools/lint.mjs --deploy && npm test && wrangler d1 migrations apply transfer --remote && wrangler deploy",
+    "check:live": "node tools/live-check.mjs",
+    "db:local": "wrangler d1 migrations apply transfer --local"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.0"
+  },
+  "license": "MIT"
+}
