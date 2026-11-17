@@ -1,5 +1,5 @@
 // End-to-end test against a running `wrangler dev` (local R2, D1, email).
-// First: npm run db:local. Start: npx wrangler dev --port 8799 --test-scheduled  (uses .dev.vars: TTL 10 s, cooldown 4 s)
+// Start: npx wrangler dev --port 8799 --test-scheduled  (uses .dev.vars: TTL 10 s, cooldown 4 s)
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { crc32 } from 'node:zlib';
@@ -61,12 +61,14 @@ async function sendTransfer(title, files) {
   return { id: created.id, paths: created.files.map((f) => f.path), ...fin };
 }
 
-const openT = (id, ua = UA) => fetch(`${BASE}/api/d/${id}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': ua }, body: '{}' });
+// ip sets the client IP the per-IP open limit sees (local dev only).
+const openT = (id, ua = UA, ip = '192.0.2.1') => fetch(`${BASE}/api/d/${id}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': ua, 'CF-Connecting-IP': ip }, body: '{}' });
 
 t2('quiet surface: robots, noindex headers, 404 root, bots blocked, shell has no data', async () => {
   const robots = await fetch(`${BASE}/robots.txt`).then((r) => r.text());
   assert.match(robots, /^User-agent: \*\nDisallow: \/\n/);
   assert.match(robots, /^Disallow: \/\*$/m); // beats a managed "Allow: /" prefix
+  assert.doesNotMatch(robots, /\/(d|api|send|assets)\b/); // no route map
   const root = await fetch(`${BASE}/`, { headers: { 'User-Agent': UA } });
   assert.equal(root.status, 404);
   assert.match(root.headers.get('x-robots-tag'), /noindex/);
@@ -158,9 +160,9 @@ t2('expires exactly at TTL, cron destroys bytes and rows, pending notices surviv
   for (let k = 0; k < 2; k++) await fetch(`${BASE}/api/d/${t.id}/f/0?t=${encodeURIComponent(info.token)}`, { headers: { 'User-Agent': UA } }).then((r) => r.arrayBuffer());
   await sleep(300);
   let lastOk = 0, firstFail = 0;
-  while (!firstFail) {
+  for (let i = 0; !firstFail; i++) {
     const now = Date.now();
-    const r = await openT(t.id);
+    const r = await openT(t.id, UA, `198.51.${i >> 8}.${i & 255}`); // fresh IP: polling must not hit the open limit
     if (r.ok) lastOk = now; else firstFail = now;
     await sleep(50);
   }
@@ -189,4 +191,30 @@ t2('abandoned upload and Delete now both purge', async () => {
   await api(`/t/${created.id}`, { method: 'DELETE' });
   assert.deepEqual(await r2Keys(`t/${created.id}/`), []);
   assert.equal(rows(await sql('SELECT COUNT(*) AS n FROM transfers WHERE id = ?', [created.id]))[0].n, 0);
+});
+
+t2('input limits: over-long input gets 400, bad checksum gets 400, odd type is not stored', async () => {
+  const post = (body) => fetch(`${BASE}/api/send/transfers`, { method: 'POST', headers: { ...SEND_H, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const one = [{ path: 'a.txt', size: 3, type: 'text/plain' }];
+  assert.equal((await post({ title: 'x'.repeat(201), files: one })).status, 400);
+  assert.equal((await post({ title: 'x'.repeat(200), message: 'm'.repeat(4001), files: one })).status, 400);
+  assert.equal((await post({ files: [{ path: 'p'.repeat(901), size: 3 }] })).status, 400);
+  const ok = await post({ title: 'x'.repeat(200), message: 'm'.repeat(4000), files: [{ path: 'p'.repeat(900), size: 3, type: 'application/json\r\nX-Evil: 1' }] });
+  assert.equal(ok.status, 200);
+  const { id } = await ok.json();
+  const [f] = rows(await sql('SELECT path, type FROM files WHERE transfer_id = ?', [id]));
+  assert.equal(f.path.length, 900);
+  assert.equal(f.type, 'application/octet-stream');
+  const put = (crc) => fetch(`${BASE}/api/send/t/${id}/f/0?crc=${crc}`, { method: 'PUT', headers: SEND_H, body: 'abc' });
+  for (const bad of ['abc', '-1', '4294967296', '1e3']) assert.equal((await put(bad)).status, 400, bad);
+  assert.equal((await put(crc32(Buffer.from('abc')))).status, 200);
+});
+
+// Keep last: it uses up the per-IP open limit.
+t2('open is rate limited per IP', async () => {
+  const t = await sendTransfer('rate', [{ path: 'r.txt', data: Buffer.from('r') }]);
+  const codes = [];
+  for (let i = 0; i < 40; i++) codes.push((await openT(t.id, UA, '203.0.113.9')).status);
+  assert.equal((await openT(t.id, UA, '203.0.113.10')).status, 200, 'other IPs are not blocked');
+  assert.ok(codes.includes(200) && codes.includes(429), codes.join(','));
 });

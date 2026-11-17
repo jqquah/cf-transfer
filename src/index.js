@@ -5,6 +5,14 @@ import { flushNotices } from './notify.js';
 const PART_SIZE = 50 * 1024 * 1024; // must match public/assets/send.js
 const MAX_FILES = 2000;
 const MAX_TOTAL = 100 * 1024 ** 3; // 100 GiB per transfer
+// Over-long input is refused with 400, never cut short in silence.
+const MAX_TITLE = 200;
+const MAX_MESSAGE = 4000;
+const MAX_PATH = 900;
+// Only a plain type/subtype is stored; anything else is served as octet-stream.
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
+// CRC-32 from the client must be a uint32 in decimal.
+const CRC = /^\d{1,10}$/;
 const ABANDON_MS = 24 * 3600 * 1000; // unfinished uploads go after 24 h
 const TOKEN_MS = 6 * 3600 * 1000; // a recipient page session lasts 6 h
 
@@ -13,7 +21,8 @@ const BOT_UA = /bot|crawl|spider|slurp|archiver|facebookexternalhit|meta-externa
 // Cloudflare "managed robots.txt" on the zone prepends "User-agent: * / Allow: /".
 // Crawlers merge both "*" groups; the longest matching rule wins and a tie goes
 // to Allow. "Disallow: /*" is longer than "Allow: /", so it wins on every path.
-const ROBOTS_TXT = 'User-agent: *\nDisallow: /\nDisallow: /*\nDisallow: /d/\nDisallow: /api/\nDisallow: /send\nDisallow: /assets/\n';
+// No per-route lines: they only map the app for an attacker.
+const ROBOTS_TXT = 'User-agent: *\nDisallow: /\nDisallow: /*\n';
 const ROBOTS = 'noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate';
 const CSP = "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
@@ -39,7 +48,7 @@ const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-'
 const newId = () => b64url(crypto.getRandomValues(new Uint8Array(16)));
 
 async function hmac(env, msg) {
-  if (!env.SIGNING_KEY || env.SIGNING_KEY.length < 32) throw new Error('SIGNING_KEY secret is missing or shorter than 32 characters');
+  if (!env.SIGNING_KEY || env.SIGNING_KEY.length < 32) throw new Error('SIGNING_KEY secret is missing');
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SIGNING_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg))));
 }
@@ -63,8 +72,7 @@ export function cleanPath(p) {
     .split('/')
     .map((s) => s.replace(/[\u0000-\u001f\u007f]/g, '').trim())
     .filter((s) => s && s !== '.' && s !== '..');
-  const out = parts.join('/').slice(0, 900);
-  return out || 'file';
+  return parts.join('/') || 'file';
 }
 
 function dedupe(paths) {
@@ -141,17 +149,22 @@ async function senderApi(req, env, url, email, ctx) {
       total += f.size;
     }
     if (total > MAX_TOTAL) return json({ error: 'A transfer can be 100 GB at most.' }, 400);
-    const paths = dedupe(files.map((f) => cleanPath(f.path)));
+    const title = String(body.title || '');
+    const message = String(body.message || '');
+    if (title.length > MAX_TITLE) return json({ error: `Title can be ${MAX_TITLE} characters at most.` }, 400);
+    if (message.length > MAX_MESSAGE) return json({ error: `Message can be ${MAX_MESSAGE} characters at most.` }, 400);
+    const cleaned = files.map((f) => cleanPath(f.path));
+    if (cleaned.some((c) => c.length > MAX_PATH)) return json({ error: `A file path can be ${MAX_PATH} characters at most.` }, 400);
+    const paths = dedupe(cleaned);
     const id = newId();
-    const title = String(body.title || '').slice(0, 200);
     const stmts = [
       env.DB.prepare("INSERT INTO transfers (id, title, message, created_by, created_at, status, total_size, file_count) VALUES (?, ?, ?, ?, ?, 'uploading', ?, ?)")
-        .bind(id, title, String(body.message || '').slice(0, 4000), email, now, total, files.length),
+        .bind(id, title, message, email, now, total, files.length),
     ];
     const ROWS = 16; // D1 allows 100 bound parameters per statement; 5 per row
     for (let i = 0; i < files.length; i += ROWS) {
       const chunk = files.slice(i, i + ROWS);
-      const args = chunk.flatMap((f, j) => [id, i + j, paths[i + j], f.size, String(f.type || 'application/octet-stream').slice(0, 200)]);
+      const args = chunk.flatMap((f, j) => [id, i + j, paths[i + j], f.size, MIME.test(String(f.type || '')) ? String(f.type) : 'application/octet-stream']);
       stmts.push(env.DB.prepare(`INSERT INTO files (transfer_id, idx, path, size, type) VALUES ${chunk.map(() => '(?, ?, ?, ?, ?)').join(', ')}`).bind(...args));
     }
     await env.DB.batch(stmts);
@@ -182,12 +195,13 @@ async function senderApi(req, env, url, email, ctx) {
   if (!f) return notFound();
   if (f.uploaded) return json({ error: 'Already uploaded.' }, 409);
   const key = `t/${id}/${idx}`;
-  const crc = (v) => (v === null || v === undefined || v === '' ? null : Number(v) >>> 0);
+  const crc = (v) => (v === null || v === undefined || v === '' ? null : CRC.test(String(v)) && Number(v) <= 0xffffffff ? Number(v) : undefined);
 
   if (!action && req.method === 'PUT') {
     if (f.size > PART_SIZE) return json({ error: 'Use multipart for this file.' }, 400);
     const len = Number(req.headers.get('content-length') ?? 0);
     if (len !== f.size) return json({ error: 'Size does not match.' }, 400);
+    if (crc(url.searchParams.get('crc')) === undefined) return json({ error: 'Bad checksum.' }, 400);
     const obj = await env.BUCKET.put(key, f.size === 0 ? '' : req.body, { httpMetadata: { contentType: f.type } });
     if (obj.size !== f.size) { await env.BUCKET.delete(key); return json({ error: 'Size does not match.' }, 400); }
     await env.DB.prepare('UPDATE files SET uploaded = 1, crc32 = ? WHERE transfer_id = ? AND idx = ?').bind(crc(url.searchParams.get('crc')), id, idx).run();
@@ -211,6 +225,7 @@ async function senderApi(req, env, url, email, ctx) {
   if (action === 'complete' && req.method === 'POST') {
     const body = await req.json().catch(() => null);
     if (!f.mpu_id || !Array.isArray(body?.parts)) return json({ error: 'Bad request.' }, 400);
+    if (crc(body.crc32) === undefined) return json({ error: 'Bad checksum.' }, 400);
     const obj = await env.BUCKET.resumeMultipartUpload(key, f.mpu_id).complete(body.parts.map((x) => ({ partNumber: Number(x.partNumber), etag: String(x.etag) })));
     if (obj.size !== f.size) { await env.BUCKET.delete(key); return json({ error: 'Size does not match.' }, 400); }
     await env.DB.prepare('UPDATE files SET uploaded = 1, mpu_id = NULL, crc32 = ? WHERE transfer_id = ? AND idx = ?').bind(crc(body.crc32), id, idx).run();
@@ -264,6 +279,8 @@ async function recipientApi(req, env, url, ctx) {
 
   if (action === 'open') {
     if (req.method !== 'POST') return notFound();
+    // Per-IP limit on minting download tokens. Free: no extra charge.
+    if (env.OPEN_LIMIT && !(await env.OPEN_LIMIT.limit({ key: req.headers.get('cf-connecting-ip') || 'local' })).success) return json({ error: 'Too many requests. Wait a minute.' }, 429);
     const body = await req.json().catch(() => ({}));
     if (!(await verifyTurnstile(env, body.turnstile, req.headers.get('cf-connecting-ip')))) return json({ error: 'Check failed. Reload the page.' }, 403);
     const { results } = await env.DB.prepare('SELECT idx, path, size, crc32 FROM files WHERE transfer_id = ? ORDER BY idx').bind(id).all();

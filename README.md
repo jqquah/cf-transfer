@@ -26,6 +26,9 @@ Bot and crawler defences:
 - No preview (`og:`) tags. Known bot, link-preview and script user agents get 404.
 - The recipient page holds no data until JavaScript runs and calls the API.
 - File links are signed and last 6 hours. An optional Turnstile check runs before the file list loads.
+- Each IP can open links at most 20 times a minute (Workers rate limit binding, no extra charge).
+- Too-long titles (200), messages (4,000) and file paths (900) get a 400 error. They are never cut short.
+  A file type that is not a plain `type/subtype` is stored as `application/octet-stream`.
 
 ## How it works
 
@@ -302,6 +305,7 @@ LIVE_ORIGIN=https://transfer.example.com npm run check:live
 | No download email | A destination address is not verified yet, or `NOTIFY_TO`, `allowed_destination_addresses` and `NOTIFY_FROM` do not agree. See `npx wrangler tail`. |
 | Email Routing error 2008 | You tried the apex domain while another provider owns its MX. Use the subdomain call in step 5a. |
 | `curl` gets 404 on a link | On purpose: script user agents are treated as bots. Use a browser. |
+| Recipient sees "Too many requests" | More than 20 opens a minute from one IP. Wait a minute. Change `ratelimits` in `wrangler.jsonc` if needed. |
 | `check:live` says robots.txt allows a path | Something removed `Disallow: /*` from `ROBOTS_TXT` in `src/index.js`. |
 
 ## License

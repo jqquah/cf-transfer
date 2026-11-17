@@ -17,6 +17,8 @@
   ],
   "send_email": [{ "name": "EMAIL", "allowed_destination_addresses": ["alice@example.com", "bob@example.com"], "allowed_sender_addresses": ["transfer@notify.example.com"] }],
   "triggers": { "crons": ["* * * * *"] },
+  // Per-IP limit on /api/d/*/open. Free: no extra charge. The limit is per Cloudflare location.
+  "ratelimits": [{ "name": "OPEN_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }],
   "vars": {
     "NOTIFY_TO": "alice@example.com,bob@example.com",
     "NOTIFY_FROM": "transfer@notify.example.com",

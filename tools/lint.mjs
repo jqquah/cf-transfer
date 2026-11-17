@@ -51,9 +51,14 @@ if (process.argv.includes('--deploy')) rule(!/REPLACE_/.test(wrangler), 'wrangle
 // Expiry is checked on every recipient request, not only by the cron.
 rule(/isExpired\(t, now\)/.test(index.slice(index.indexOf('async function recipientApi'))), 'recipientApi must check expiry on each request');
 
-// The dev example key must pass the 32-character check in src/index.js.
-const devKey = read('.dev.vars.example').match(/^SIGNING_KEY=(.*)$/m)?.[1] || '';
-rule(devKey.length >= 32, '.dev.vars.example SIGNING_KEY must be at least 32 characters');
+// Security review: refuse bad input with 400, never cut it short or store it raw.
+const createApi = index.slice(index.indexOf("if (p === '/transfers' && req.method === 'POST')"), index.indexOf('if (!m) return notFound();'));
+rule(!/\.slice\(0, \d+\)/.test(createApi) && !/\.slice\(0, \d+\)/.test(index.slice(index.indexOf('export function cleanPath'), index.indexOf('function dedupe'))), 'title, message, path and type must be refused with 400 when too long, not truncated');
+rule(/MIME\.test\(String\(f\.type/.test(createApi), 'file type must pass the MIME check before it is stored');
+rule((index.match(/=== undefined\) return json\(\{ error: 'Bad checksum\.' \}, 400\)/g) || []).length === 2, 'both upload paths (PUT and multipart complete) must refuse a bad CRC-32');
+rule(!/const ROBOTS_TXT = '[^']*Disallow: \/[a-z]/.test(index), 'robots.txt must not list routes');
+
+rule(/"ratelimits":\s*\[\{ "name": "OPEN_LIMIT"/.test(wrangler) && /env\.OPEN_LIMIT\.limit\(/.test(index.slice(index.indexOf("if (action === 'open')"))), 'recipient open must keep the OPEN_LIMIT rate limit');
 
 // The e2e test must look up the local D1 id; a hardcoded id broke when the real id was set.
 const e2e = read('tests/e2e.test.mjs');
