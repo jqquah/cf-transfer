@@ -64,5 +64,8 @@ rule(/"ratelimits":\s*\[\{ "name": "OPEN_LIMIT"/.test(wrangler) && /env\.OPEN_LI
 const e2e = read('tests/e2e.test.mjs');
 rule(!/d1\/database\/(REPLACE_|[0-9a-f]{8}-)/.test(e2e), 'tests/e2e.test.mjs must not hardcode a D1 database id');
 
+// A partner behind a Netskope proxy got 404: Cloudflare tags such proxies as verified bots.
+rule(!/verifiedBotCategory/.test(index), 'recipient routes must not block on cf.verifiedBotCategory (corporate proxies are tagged as bots)');
+
 if (errors.length) { console.error(errors.map((e) => `lint: ${e}`).join('\n')); process.exit(1); }
 console.log('lint: ok');

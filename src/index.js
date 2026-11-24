@@ -364,7 +364,10 @@ async function handle(req, env, ctx) {
   }
 
   if (path.startsWith('/d/') || path.startsWith('/api/d/')) {
-    if (!ua || BOT_UA.test(ua) || req.cf?.verifiedBotCategory) return notFound();
+    // Gate on the user agent only. Cloudflare tags corporate web proxies (Netskope,
+    // Zscaler) as verified bots, category "Security", but real people sit behind them.
+    // The page holds no data and the file list needs Turnstile, so this is safe.
+    if (!ua || BOT_UA.test(ua)) return notFound();
     if (path.startsWith('/api/')) return recipientApi(req, env, url, ctx);
     if (!/^\/d\/[\w-]{22}$/.test(path) || req.method !== 'GET') return notFound();
     // The shell holds no transfer data; it loads only after JavaScript runs.

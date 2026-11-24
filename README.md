@@ -305,6 +305,7 @@ LIVE_ORIGIN=https://transfer.example.com npm run check:live
 | No download email | A destination address is not verified yet, or `NOTIFY_TO`, `allowed_destination_addresses` and `NOTIFY_FROM` do not agree. See `npx wrangler tail`. |
 | Email Routing error 2008 | You tried the apex domain while another provider owns its MX. Use the subdomain call in step 5a. |
 | `curl` gets 404 on a link | On purpose: script user agents are treated as bots. Use a browser. |
+| Recipient behind a company web proxy gets "Not found" | Fixed: Cloudflare tags proxies such as Netskope as verified bots. The Worker checks only the user agent. Do not add a `verifiedBotCategory` check (lint refuses it). |
 | Recipient sees "Too many requests" | More than 20 opens a minute from one IP. Wait a minute. Change `ratelimits` in `wrangler.jsonc` if needed. |
 | `check:live` says robots.txt allows a path | Something removed `Disallow: /*` from `ROBOTS_TXT` in `src/index.js`. |
 
